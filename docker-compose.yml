@@ -1,0 +1,7 @@
+services:
+  printerhive-client:
+    image: ghcr.io/printerhive/printerhive-client:latest
+    container_name: printerhive-client
+    restart: unless-stopped
+    volumes:
+      - ./printers.json:/app/printers.json
