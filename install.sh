@@ -1,0 +1,187 @@
+#!/bin/bash
+
+echo "                                                                                                                                     "
+echo "                                                                                                                                     "
+echo "                                                                                                                                     "
+echo "                                                                                                                                     "
+echo "                     .--.                                                                                                             "
+echo "                    --  --                                                                                                            "
+echo "                    -    -                                                                                                            "
+echo "           --:      -    -                                                                                                            "
+echo "         .-----     -    -                                 @                                                                         "
+echo "        ---   ---   ------   -:                           @@@                                     #@         @@                      "
+echo "      ---       ---   --   -----                          @@@              ++                     #@         @@                      "
+echo "    ---          .--:    :--:  ---                                         @@                     #@                                 "
+echo "   --:             ---  ---      ---    @@@ @@@    %@@ #@ @@@  @@@ @@@     @@      =@@+    @@@ @@ #@  ##     -= -=      =.   +#      "
+echo "   -                 -  -         --    @@@@@@@@%  %@@@@@ @@@  @@@@@@@@  @@@@@@   @@@@@@   @@@@@@ #@@@@@@@   @@  @.    -@  @@@@@@    "
+echo "   -                 -  -         --    @@@@  @@@  %@@@@# @@@  @@@@:%@@@ ++@@++  @@@  @@@  @@@@@% #@@   #@   @@  @@    @@ #@    @@   "
+echo "   -                 -  -         --    @@@    @@@ %@@    @@@  @@@   @@@   @@   .@@    @@  @@@    #@     @*  @@   @    @  @@     @   "
+echo "   -                 -  -         --    @@@    @@@ %@@    @@@  @@@   :@@   @@   @@@@@@@@@# @@@    #@     @@  @@   @@  @@  @@@@@@@@   "
+echo "   -                 -  -         --    @@@    @@@ %@@    @@@  @@@   :@@   @@   *@@        @@@    #@     @@  @@    @  @   @-         "
+echo "   -                 -  --        --    @@@*  :@@: %@@    @@@  @@@   :@@   @@    @@@   @   @@@    #@     @@  @@    @@@@   @@         "
+echo "   -                 -  ---     ---     @@@@@@@@@  %@@    @@@  @@@   :@@   @@@@+ @@@@@@@@  @@@    #@     @@  @@    +@@     @@   @@   "
+echo "   -                 -    --- :--.      @@@@@@@@   %@@    @@@  @@@   :@@    @@@@  .@@@@@   @@@    #@     @@  @@     @@      @@@@@    "
+echo "   -                 -      ----        @@@                                                                                          "
+echo "   -                 -       .          @@@                                                                                          "
+echo "   --              :--                  @@@                                                                                          "
+echo "    ---           ---                                                                                                                "
+echo "      ---       ---                                                                                                                  "
+echo "       .--:   ---                                                                                                                    "
+echo "         ---:--:                                                                                                                     "
+echo "           ---                                                                                                                       "
+
+echo "We will now ask for a password for your Raspberry so we can download Printerhive, don't worry, your password is not stored anywhere."
+sudo rm -rf printerhive-node-client
+
+if [ -z "$1" ]; then
+    echo "Please enter the API token:
+If you don't know your API token, you can find it here: https://app.printerhive.com/location"
+    read -p "> " API_TOKEN
+else
+    API_TOKEN="$1"
+fi
+
+# Make sure the script exits if any command fails
+set -e
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+NC='\033[0m'
+
+log_step() {
+    local step="$1"
+    local status="$2"
+    local message="$3"
+    local token="$API_TOKEN"
+
+    response=$(curl -s -w "%{http_code}" -X POST "https://app.printerhive.com/api/install-progress" \
+        -H "Content-Type: application/json" \
+        -H "X-AUTH-TOKEN: $token" \
+        -d "{\"step\": \"$step\", \"status\": \"$status\", \"message\": \"$message\"}")
+
+    http_code="${response: -3}"
+    body="${response:0:${#response}-3}"
+
+    if [[ "$http_code" != 2* ]]; then
+        error_message=$(echo "$body" | sed -n 's/.*"error":"\([^"]*\)".*/\1/p')
+        echo -e "${RED}$error_message${NC}"
+        exit 1
+    fi
+}
+
+# Function to check if Docker is installed
+check_docker() {
+    if ! [ -x "$(command -v docker)" ]; then
+        echo -e "${RED}Docker is not installed. Installing Docker...${NC}"
+        curl -fsSL https://get.docker.com -o get-docker.sh
+        sudo sh get-docker.sh
+        rm get-docker.sh
+        sudo usermod -aG docker $USER
+        echo -e "${GREEN}Docker installed successfully.${NC}"
+    else
+        echo -e "${GREEN}Docker is already installed.${NC}"
+    fi
+}
+
+# Function to check if Docker Compose is installed
+check_docker_compose() {
+    if ! [ -x "$(command -v docker-compose)" ]; then
+        echo -e "${RED}Docker Compose is not installed. Installing Docker Compose...${NC}"
+        sudo apt-get update
+        sudo apt-get install -y docker-compose
+        echo -e "${GREEN}Docker Compose installed successfully.${NC}"
+    else
+        echo -e "${GREEN}Docker Compose is already installed.${NC}"
+    fi
+}
+
+setup_environment() {
+# Define the .env file path
+ENV_FILE=".env"
+
+# Check if the .env file already exists
+if [ -f "$ENV_FILE" ]; then
+    echo ".env file already exists. Skipping creation."
+else
+    # Create the .env file
+    echo "API_TOKEN=$API_TOKEN" > "$ENV_FILE"
+    echo "API_DOMAIN=printerhive.com" >> "$ENV_FILE"
+    echo "API_HOST=https://app.printerhive.com" >> "$ENV_FILE"
+
+    echo ".env file created successfully."
+fi
+
+log_step "4" "success" "Environment created"
+
+# Define the path for printers.json
+PRINTERS_FILE="printers.json"
+
+if [ ! -f "$PRINTERS_FILE" ]; then
+    echo "Creating printers.json file with default content..."
+    cat <<EOL > "$PRINTERS_FILE"
+{
+  "printers": [
+  ]
+}
+EOL
+    echo "printers.json file created successfully."
+else
+    echo "printers.json file already exists. Skipping creation."
+fi
+
+log_step "5" "success" "Space for printers created"
+}
+
+download_docker_compose() {
+    if [ ! -f "docker-compose.yml" ]; then
+        echo "Stahuji docker-compose.yml..."
+        curl -fsSL https://raw.githubusercontent.com/printerhive/printerhive-client/main/docker-compose.yml -o docker-compose.yml
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}Chyba při stahování docker-compose.yml${NC}"
+            log_step "6" "error" "Failed to download docker-compose.yml"
+            exit 1
+        fi
+        echo -e "${GREEN}docker-compose.yml stažen.${NC}"
+    else
+        echo "docker-compose.yml již existuje, přeskakuji stahování."
+    fi
+}
+
+start_app() {
+# Build and start the Docker container
+echo "Building and starting the Docker container..."
+mkdir -p ~/.docker
+sudo chown -R $(id -u):$(id -g) ~/.docker
+
+# Check if the container exists
+if docker ps -a --format '{{.Names}}' | grep -q "^printerhive-client$"; then
+    echo "Container 'printerhive-client' exists. Removing it..."
+    docker stop printerhive-client
+    docker rm printerhive-client
+else
+    echo "Container 'printerhive-client' does not exist. Skipping removal."
+fi
+
+if docker ps -a --format '{{.Names}}' | grep -q "^printerhive-camera-feed$"; then
+    echo "Container 'printerhive-camera-feed' exists. Removing it..."
+    docker stop printerhive-camera-feed
+    docker rm printerhive-camera-feed
+else
+    echo "Container 'printerhive-client' does not exist. Skipping removal."
+fi
+sudo docker-compose up --build --force-recreate -d
+
+log_step "6" "success" "App built"
+}
+
+# Main script execution
+echo -e "${GREEN}Starting setup...${NC}"
+log_step "0" "success" "Started installation of Printerhive"
+check_docker
+log_step "2" "success" "Docker installed"
+check_docker_compose
+log_step "3" "success" "Docker compose installed"
+setup_environment
+download_docker_compose
+start_app
+echo -e "${GREEN}Setup complete.${NC}"
