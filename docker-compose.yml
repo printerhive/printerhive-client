@@ -1,6 +1,6 @@
 services:
   printerhive-client:
-    image: ghcr.io/printerhive/printerhive-client:latest
+    image: ghcr.io/printerhive/printerhive-client:v3.0.1
     container_name: printerhive-client
     restart: unless-stopped
     volumes:
