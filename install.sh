@@ -169,6 +169,7 @@ if docker ps -a --format '{{.Names}}' | grep -q "^printerhive-camera-feed$"; the
 else
     echo "Container 'printerhive-client' does not exist. Skipping removal."
 fi
+sudo docker-compose pull
 sudo docker-compose up --build --force-recreate -d
 
 log_step "6" "success" "App built"
