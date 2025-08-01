@@ -30,8 +30,8 @@ echo "       .--:   ---                                                         
 echo "         ---:--:                                                                                                                     "
 echo "           ---                                                                                                                       "
 
-echo "We will now ask for a password for your Raspberry so we can download Printerhive, don't worry, your password is not stored anywhere."
-sudo rm -rf printerhive-node-client
+echo "We may ask for a password for your admin account on this machine so we can download Printerhive, don't worry, your password is not stored anywhere."
+sudo find / -type d -name "printerhive-node-client" -exec sudo rm -rf {} \;
 
 if [ -z "$1" ]; then
     echo "Please enter the API token:
@@ -41,12 +41,26 @@ else
     API_TOKEN="$1"
 fi
 
-# Make sure the script exits if any command fails
 set -e
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 NC='\033[0m'
+
+CURRENT_DIR="$(pwd)"
+
+if [ "$(ls -A . 2>/dev/null | wc -l)" -gt 0 ]; then
+    HAS_CONTENT=true
+else
+    HAS_CONTENT=false
+fi
+
+if [ "$HAS_CONTENT" = true ]; then
+    if [ ! -f "./printers.json" ]; then
+        mkdir -p printerhive-client
+        cd printerhive-client
+    fi
+fi
 
 log_step() {
     local step="$1"
@@ -69,7 +83,6 @@ log_step() {
     fi
 }
 
-# Function to check if Docker is installed
 check_docker() {
     if ! [ -x "$(command -v docker)" ]; then
         echo -e "${RED}Docker is not installed. Installing Docker...${NC}"
@@ -83,7 +96,6 @@ check_docker() {
     fi
 }
 
-# Function to check if Docker Compose is installed
 check_docker_compose() {
     if ! [ -x "$(command -v docker-compose)" ]; then
         echo -e "${RED}Docker Compose is not installed. Installing Docker Compose...${NC}"
@@ -96,14 +108,11 @@ check_docker_compose() {
 }
 
 setup_environment() {
-# Define the .env file path
 ENV_FILE=".env"
 
-# Check if the .env file already exists
 if [ -f "$ENV_FILE" ]; then
     echo ".env file already exists. Skipping creation."
 else
-    # Create the .env file
     echo "API_TOKEN=$API_TOKEN" > "$ENV_FILE"
     echo "API_DOMAIN=printerhive.com" >> "$ENV_FILE"
     echo "API_HOST=https://app.printerhive.com" >> "$ENV_FILE"
@@ -113,7 +122,6 @@ fi
 
 log_step "4" "success" "Environment created"
 
-# Define the path for printers.json
 PRINTERS_FILE="printers.json"
 
 if [ ! -f "$PRINTERS_FILE" ]; then
@@ -148,7 +156,6 @@ download_docker_compose() {
 }
 
 start_app() {
-# Build and start the Docker container
 echo "Building and starting the Docker container..."
 mkdir -p ~/.docker
 sudo chown -R $(id -u):$(id -g) ~/.docker
@@ -175,7 +182,6 @@ sudo docker-compose up --build --force-recreate -d
 log_step "6" "success" "App built"
 }
 
-# Main script execution
 echo -e "${GREEN}Starting setup...${NC}"
 log_step "0" "success" "Started installation of Printerhive"
 check_docker
