@@ -48,10 +48,12 @@ docker pull ghcr.io/printerhive/printerhive-client:latest
 
 - linux/amd64 (Intel/AMD 64-bit CPUs)
 - linux/arm64 (ARM 64-bit CPUs, e.g., Apple Silicon M1/M2, Raspberry Pi 4/5 running 64-bit OS)
+- linux/arm/v7 (ARM 32-bit CPUs, e.g., Raspberry Pi 2/3/4 running 32-bit OS)
 #### Common Devices:
 
 - x86/x64 PCs/Servers: Most desktops, laptops, and servers running Intel or AMD processors.
 - Raspberry Pi 4 Model B, Raspberry Pi 5: Running the 64-bit version of Raspberry Pi OS or compatible distributions.
+- Raspberry Pi 2 Model B, Raspberry Pi 3 Model B, Raspberry Pi Zero W, Raspberry Pi Zero 2 W: Running the 32-bit version of Raspberry Pi OS or compatible distributions.
 - Apple Silicon Macs (M1, M2, etc.): When running Docker Desktop.
 
 Ensure your Docker environment supports the architecture of your device.
