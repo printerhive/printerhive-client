@@ -1,4 +1,5 @@
-<img src="https://example.com/image.jpg](https://app.printerhive.com/build/media/logos/printerhive_dark.svg" alt="Printerhive.com" width="500">
+![Printerhive]([https://example.com/image.jpg](https://example.com/image.jpg](https://app.printerhive.com/build/media/logos/printerhive_dark.svg))
+
 # Printerhive Client
 This repository contains the PrinterHive client application. It connects your 3D printers to the PrinterHive service, allowing for remote monitoring and control.
 
