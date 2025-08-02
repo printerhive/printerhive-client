@@ -120,7 +120,7 @@ else
     echo ".env file created successfully."
 fi
 
-log_step "4" "success" "Environment created"
+log_step "3" "success" "Environment created"
 
 PRINTERS_FILE="printers.json"
 
@@ -137,22 +137,23 @@ else
     echo "printers.json file already exists. Skipping creation."
 fi
 
-log_step "5" "success" "Space for printers created"
+log_step "4" "success" "Space for printers created"
 }
 
 download_docker_compose() {
     if [ ! -f "docker-compose.yml" ]; then
-        echo "Stahuji docker-compose.yml..."
+        echo "Downloading docker-compose.yml..."
         curl -fsSL https://raw.githubusercontent.com/printerhive/printerhive-client/main/docker-compose.yml -o docker-compose.yml
         if [ $? -ne 0 ]; then
-            echo -e "${RED}Chyba při stahování docker-compose.yml${NC}"
+            echo -e "${RED}Error when downloading docker-compose.yml${NC}"
             log_step "6" "error" "Failed to download docker-compose.yml"
             exit 1
         fi
         echo -e "${GREEN}docker-compose.yml stažen.${NC}"
     else
-        echo "docker-compose.yml již existuje, přeskakuji stahování."
+        echo "docker-compose.yml already exists, skipping download."
     fi
+    log_step "5" "success" "App downloaded"
 }
 
 start_app() {
@@ -185,10 +186,10 @@ log_step "6" "success" "App built"
 echo -e "${GREEN}Starting setup...${NC}"
 log_step "0" "success" "Started installation of Printerhive"
 check_docker
-log_step "2" "success" "Docker installed"
+log_step "1" "success" "Docker installed"
 check_docker_compose
-log_step "3" "success" "Docker compose installed"
+log_step "2" "success" "Docker compose installed"
 setup_environment
 download_docker_compose
 start_app
-echo -e "${GREEN}Setup complete.${NC}"
+echo -e "${GREEN}Setup complete and client is running.${NC}"
