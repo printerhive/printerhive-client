@@ -3,6 +3,11 @@ services:
     image: ghcr.io/printerhive/printerhive-client:latest
     container_name: printerhive-client
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "2"
     volumes:
       - ./printers.json:/app/printers.json
       - ./.env:/app/.env
