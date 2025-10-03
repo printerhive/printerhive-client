@@ -31,7 +31,6 @@ echo "         ---:--:                                                          
 echo "           ---                                                                                                                       "
 
 echo "We may ask for a password for your admin account on this machine so we can download Printerhive, don't worry, your password is not stored anywhere."
-sudo find / -type d -name "printerhive-node-client" -exec sudo rm -rf {} \;
 
 if [ -z "$1" ]; then
     echo "Please enter the API token:
