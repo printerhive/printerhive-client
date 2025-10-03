@@ -94,16 +94,48 @@ check_docker() {
     else
         echo -e "${GREEN}Docker is already installed.${NC}"
     fi
-}
 
-check_docker_compose() {
-    if ! [ -x "$(command -v docker-compose)" ]; then
-        echo -e "${RED}Docker Compose is not installed. Installing Docker Compose...${NC}"
-        sudo apt-get update
-        sudo apt-get install -y docker-compose
-        echo -e "${GREEN}Docker Compose installed successfully.${NC}"
+    if docker compose version >/dev/null 2>&1; then
+        echo -e "${GREEN}Docker Compose plugin is available.${NC}"
     else
-        echo -e "${GREEN}Docker Compose is already installed.${NC}"
+        echo -e "${RED}Docker Compose plugin is not available. Attempting to install...${NC}"
+        if [ -f /etc/os-release ]; then
+            . /etc/os-release
+            DISTRO=$ID
+        else
+            echo -e "${RED}Cannot determine Linux distribution. Please install docker-compose-plugin manually.${NC}"
+            exit 1
+        fi
+
+        case $DISTRO in
+            ubuntu|debian|raspbian)
+                echo -e "${GREEN}Detected Debian/Ubuntu. Installing docker-compose-plugin...${NC}"
+                sudo apt-get update
+                sudo apt-get install -y docker-compose-plugin
+                ;;
+            centos|rhel|fedora)
+                echo -e "${GREEN}Detected RHEL/Fedora. Installing docker-compose-plugin...${NC}"
+                if command -v dnf >/dev/null 2>&1; then
+                    sudo dnf install -y docker-compose-plugin
+                elif command -v yum >/dev/null 2>&1; then
+                    sudo yum install -y docker-compose-plugin
+                else
+                    echo -e "${RED}Neither dnf nor yum found. Cannot install docker-compose-plugin.${NC}"
+                    exit 1
+                fi
+                ;;
+            *)
+                echo -e "${RED}Unsupported distribution '$DISTRO'. Please install docker-compose-plugin manually.${NC}"
+                exit 1
+                ;;
+        esac
+
+        if docker compose version >/dev/null 2>&1; then
+            echo -e "${GREEN}Docker Compose plugin installed successfully.${NC}"
+        else
+            echo -e "${RED}Failed to install Docker Compose plugin. Please install it manually and run the script again.${NC}"
+            exit 1
+        fi
     fi
 }
 
@@ -115,7 +147,7 @@ if [ -f "$ENV_FILE" ]; then
 else
     echo "API_TOKEN=$API_TOKEN" > "$ENV_FILE"
     echo "API_DOMAIN=printerhive.com" >> "$ENV_FILE"
-    echo "API_HOST=https://app.printerhive.com" >> "$ENV_FILE"
+    echo "API_HOST=https://app.printerhive.com  " >> "$ENV_FILE"
 
     echo ".env file created successfully."
 fi
@@ -149,7 +181,7 @@ download_docker_compose() {
             log_step "6" "error" "Failed to download docker-compose.yml"
             exit 1
         fi
-        echo -e "${GREEN}docker-compose.yml stažen.${NC}"
+        echo -e "${GREEN}docker-compose.yml downloaded.${NC}"
     else
         echo "docker-compose.yml already exists, skipping download."
     fi
@@ -161,7 +193,6 @@ echo "Building and starting the Docker container..."
 mkdir -p ~/.docker
 sudo chown -R $(id -u):$(id -g) ~/.docker
 
-# Check if the container exists
 if docker ps -a --format '{{.Names}}' | grep -q "^printerhive-client$"; then
     echo "Container 'printerhive-client' exists. Removing it..."
     docker stop printerhive-client
@@ -175,10 +206,11 @@ if docker ps -a --format '{{.Names}}' | grep -q "^printerhive-camera-feed$"; the
     docker stop printerhive-camera-feed
     docker rm printerhive-camera-feed
 else
-    echo "Container 'printerhive-client' does not exist. Skipping removal."
+    echo "Container 'printerhive-camera-feed' does not exist. Skipping removal."
 fi
-sudo docker-compose pull
-sudo docker-compose up --build --force-recreate -d
+
+sudo docker compose pull
+sudo docker compose up --build --force-recreate -d
 
 log_step "6" "success" "App built"
 }
@@ -187,9 +219,8 @@ echo -e "${GREEN}Starting setup...${NC}"
 log_step "0" "success" "Started installation of Printerhive"
 check_docker
 log_step "1" "success" "Docker installed"
-check_docker_compose
-log_step "2" "success" "Docker compose installed"
+log_step "2" "success" "Docker Compose plugin checked/installed (using 'docker compose')"
 setup_environment
-download_docker_compose
+download_docker_compose_file
 start_app
-echo -e "${GREEN}Setup complete and client is running.${NC}"
+echo -e "${GREEN}Setup complete and client is running using 'docker compose'.${NC}"
