@@ -31,6 +31,7 @@ echo "         ---:--:                                                          
 echo "           ---                                                                                                                       "
 
 echo "We may ask for a password for your admin account on this machine so we can download Printerhive, don't worry, your password is not stored anywhere."
+sudo find / -type d -name "printerhive-node-client" -exec sudo rm -rf {} \;
 
 if [ -z "$1" ]; then
     echo "Please enter the API token:
@@ -220,6 +221,6 @@ check_docker
 log_step "1" "success" "Docker installed"
 log_step "2" "success" "Docker Compose plugin checked/installed (using 'docker compose')"
 setup_environment
-download_docker_compose
+download_docker_compose_file
 start_app
 echo -e "${GREEN}Setup complete and client is running using 'docker compose'.${NC}"
