@@ -172,7 +172,7 @@ fi
 log_step "4" "success" "Space for printers created"
 }
 
-download_docker_compose_file() {
+download_docker_compose() {
     if [ ! -f "docker-compose.yml" ]; then
         echo "Downloading docker-compose.yml..."
         curl -fsSL https://raw.githubusercontent.com/printerhive/printerhive-client/main/docker-compose.yml -o docker-compose.yml
