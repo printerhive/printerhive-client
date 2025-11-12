@@ -221,6 +221,6 @@ check_docker
 log_step "1" "success" "Docker installed"
 log_step "2" "success" "Docker Compose plugin checked/installed (using 'docker compose')"
 setup_environment
-download_docker_compose_file
+download_docker_compose
 start_app
 echo -e "${GREEN}Setup complete and client is running using 'docker compose'.${NC}"
