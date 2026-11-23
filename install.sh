@@ -116,21 +116,39 @@ api_error_message() {
     fi
 }
 
+with_deadline() {
+    # with_deadline SECONDS COMMAND...: stops COMMAND after SECONDS. Plain bash, because macOS has no timeout(1).
+    local seconds="$1"
+    shift
+    # A background job reads /dev/null unless stdin is given explicitly; request bodies come through stdin.
+    "$@" <&0 &
+    local pid=$!
+    # The watchdog keeps no pipe open, so a command substitution around this returns as soon as COMMAND ends.
+    { sleep "$seconds"; kill -TERM "$pid"; sleep 1; kill -KILL "$pid"; } </dev/null >/dev/null 2>&1 &
+    local watchdog=$!
+    local rc=0
+    # 2>/dev/null: no "Terminated" job notice in the installer output when the deadline stops COMMAND.
+    wait "$pid" 2>/dev/null || rc=$?
+    kill "$watchdog" 2>/dev/null
+    wait "$watchdog" 2>/dev/null
+    return "$rc"
+}
+
 curl_json() {
     # curl_json METHOD URL SECONDS [extra curl args...]: the whole request, whatever ~/.curlrc adds, ends within SECONDS.
     # Sets: HTTP_BODY, HTTP_CODE
     local method="$1" url="$2" seconds="$3"
     shift 3
     local response
-    # ~/.curlrc still supplies proxy and CA settings. --retry 0 overrides its retries, and the outer timeout also
+    # ~/.curlrc still supplies proxy and CA settings. --retry 0 overrides its retries, and the outer deadline also
     # covers extra transfers it may add (url/next), so nothing outlives the caller's budget; callers own retrying.
     # A transport error or timeout (even after a 200 status line) leaves no usable body: report it as HTTP 000.
     # OAuth errors arrive as HTTP 4xx with a JSON body, so CURL_NO_FAIL (set by authenticate_with_device) keeps
     # a fail/fail-with-body option in ~/.curlrc from turning them into transport errors.
     # A proxy password asked once up front (CURL_PROXY_AUTH) reaches curl as an extra config on a file descriptor,
-    # never in its arguments: under timeout(1) curl cannot prompt on the terminal itself.
+    # never in its arguments: as a background job under with_deadline curl cannot prompt on the terminal itself.
     # The config is empty when no password was asked for.
-    if ! response=$(timeout -k 1 "$seconds" curl -sS --retry 0 "${CURL_NO_FAIL[@]}" -K <(printf '%s\n' "${CURL_PROXY_AUTH:-}") --max-time "$seconds" -w "\n__HTTP_CODE__%{http_code}" -X "$method" "$url" \
+    if ! response=$(with_deadline "$seconds" curl -sS --retry 0 "${CURL_NO_FAIL[@]}" -K <(printf '%s\n' "${CURL_PROXY_AUTH:-}") --max-time "$seconds" -w "\n__HTTP_CODE__%{http_code}" -X "$method" "$url" \
         -H "Content-Type: application/json" \
         -H "User-Agent: $USER_AGENT" \
         "$@"); then
@@ -147,7 +165,7 @@ curl_json() {
 # Printerhive website (any sign-in method works there) and we receive the API token.
 
 ask_proxy_password() {
-    # curl cannot prompt for a proxy password under timeout(1), and guessing from curl's config files is unreliable.
+    # curl cannot prompt for a proxy password under with_deadline, and guessing from curl's config files is unreliable.
     # Every curl call in this installer adds the same -K, so the whole installation goes through the proxy.
     # A user whose proxy needs a password typed at run time names the proxy user explicitly; it is asked for once here
     # and then overrides the proxy user from ~/.curlrc. Without it, curl's own config is used unchanged.
@@ -271,8 +289,7 @@ print(json.dumps({'device_code': os.environ['DEVICE_CODE']}))
 authenticate_with_device() {
     section_header "Connect this device to your Printerhive account"
 
-    # Every request runs under timeout(1), so nothing ~/.curlrc adds can outlive the code.
-    require_command timeout "Install with: sudo apt install coreutils"
+    # Every request runs under with_deadline, so nothing ~/.curlrc adds can outlive the code.
     # --no-fail-with-body only exists since curl 7.76. Probe once, before the code exists, and without ~/.curlrc (-q).
     CURL_NO_FAIL=(--no-fail)
     curl -q --help all 2>/dev/null | grep -q -- '--fail-with-body' && CURL_NO_FAIL+=(--no-fail-with-body)
