@@ -117,154 +117,199 @@ api_error_message() {
 }
 
 curl_json() {
-    # curl_json METHOD URL [extra curl args...]
+    # curl_json METHOD URL SECONDS [extra curl args...]: the whole request, whatever ~/.curlrc adds, ends within SECONDS.
     # Sets: HTTP_BODY, HTTP_CODE
-    local method="$1" url="$2"
-    shift 2
+    local method="$1" url="$2" seconds="$3"
+    shift 3
     local response
-    response=$(curl -sS -w "\n__HTTP_CODE__%{http_code}" -X "$method" "$url" \
+    # ~/.curlrc still supplies proxy and CA settings. --retry 0 overrides its retries, and the outer timeout also
+    # covers extra transfers it may add (url/next), so nothing outlives the caller's budget; callers own retrying.
+    # A transport error or timeout (even after a 200 status line) leaves no usable body: report it as HTTP 000.
+    # OAuth errors arrive as HTTP 4xx with a JSON body, so CURL_NO_FAIL (set by authenticate_with_device) keeps
+    # a fail/fail-with-body option in ~/.curlrc from turning them into transport errors.
+    # A proxy password asked once up front (CURL_PROXY_AUTH) reaches curl as an extra config on a file descriptor,
+    # never in its arguments: under timeout(1) curl cannot prompt on the terminal itself.
+    # The config is empty when no password was asked for.
+    if ! response=$(timeout -k 1 "$seconds" curl -sS --retry 0 "${CURL_NO_FAIL[@]}" -K <(printf '%s\n' "${CURL_PROXY_AUTH:-}") --max-time "$seconds" -w "\n__HTTP_CODE__%{http_code}" -X "$method" "$url" \
         -H "Content-Type: application/json" \
         -H "User-Agent: $USER_AGENT" \
-        "$@")
+        "$@"); then
+        HTTP_CODE=000
+        HTTP_BODY=""
+        return 0
+    fi
     HTTP_CODE="${response##*__HTTP_CODE__}"
     HTTP_BODY="${response%__HTTP_CODE__*}"
 }
 
-# ── Authentication ────────────────────────────────────────────────────────────
+# ── Authentication (device sign-in, RFC 8628) ─────────────────────────────────
+# The installer never sees a password: the user confirms a short code on the
+# Printerhive website (any sign-in method works there) and we receive the API token.
 
-auth_login() {
-    local email="$1" password="$2"
+ask_proxy_password() {
+    # curl cannot prompt for a proxy password under timeout(1), and guessing from curl's config files is unreliable.
+    # Every curl call in this installer adds the same -K, so the whole installation goes through the proxy.
+    # A user whose proxy needs a password typed at run time names the proxy user explicitly; it is asked for once here
+    # and then overrides the proxy user from ~/.curlrc. Without it, curl's own config is used unchanged.
+    [ -n "${PRINTERHIVE_PROXY_USER:-}" ] || return 0
+    { : </dev/tty; } 2>/dev/null || fail "PRINTERHIVE_PROXY_USER needs a terminal to ask for the proxy password."
+    local password
+    printf '  Proxy password for %s: ' "$PRINTERHIVE_PROXY_USER" >/dev/tty
+    IFS= read -r -s password </dev/tty || password=""
+    printf '\n' >/dev/tty
+    # curl config syntax: a double-quoted value with backslash and quote escaped.
+    password=${password//\\/\\\\}
+    password=${password//\"/\\\"}
+    local user=${PRINTERHIVE_PROXY_USER//\\/\\\\}
+    user=${user//\"/\\\"}
+    CURL_PROXY_AUTH="proxy-user = \"${user}:${password}\""
+}
+
+monotonic_ms() {
+    # CLOCK_BOOTTIME keeps counting while the host is suspended and ignores wall-clock changes, like the code's lifetime.
+    python3 -c 'import time; print(int(time.clock_gettime(getattr(time, "CLOCK_BOOTTIME", time.CLOCK_MONOTONIC)) * 1000))'
+}
+
+auth_device_start() {
     local payload
-    payload=$(LOGIN_EMAIL="$email" LOGIN_PASSWORD="$password" python3 -c "
+    payload=$(DEVICE_HOSTNAME="$(hostname 2>/dev/null || true)" python3 -c "
 import json, os
-print(json.dumps({
-    'email': os.environ['LOGIN_EMAIL'],
-    'password': os.environ['LOGIN_PASSWORD'],
-}))
+print(json.dumps({'hostname': os.environ.get('DEVICE_HOSTNAME', ''), 'platform': 'linux_docker'}))
 ")
-    curl_json POST "${API_HOST}/api/auth/login" -d "$payload"
+    # The code's lifetime starts no later than this request, so the deadline is counted from here.
+    local started_ms
+    started_ms=$(monotonic_ms)
+    curl_json POST "${API_HOST}/api/auth/device" 30 --connect-timeout 10 -d "$payload"
 
     if [[ "$HTTP_CODE" != 2* ]]; then
+        # A proxy that asks for a password (curl cannot prompt here) ends as HTTP 000 or 407.
+        [[ "$HTTP_CODE" == 000 || "$HTTP_CODE" == 407 ]] && [ -z "${PRINTERHIVE_PROXY_USER:-}" ] &&
+            warn "If your proxy asks for a password, run the installer again with PRINTERHIVE_PROXY_USER=<proxy user>."
         fail "$(api_error_message "$HTTP_BODY") (HTTP $HTTP_CODE)"
     fi
 
-    ACCESS_TOKEN=$(printf '%s' "$HTTP_BODY" | json_get 'access_token') || fail "Invalid server response."
-    USER_EMAIL=$(printf '%s' "$HTTP_BODY" | json_get 'user.email') || USER_EMAIL="$email"
+    DEVICE_CODE=$(printf '%s' "$HTTP_BODY" | json_get 'device_code') || fail "Invalid server response."
+    USER_CODE=$(printf '%s' "$HTTP_BODY" | json_get 'user_code') || fail "Invalid server response."
+    VERIFICATION_URI=$(printf '%s' "$HTTP_BODY" | json_get 'verification_uri') || fail "Invalid server response."
+    DEVICE_EXPIRES_IN=$(printf '%s' "$HTTP_BODY" | json_get 'expires_in') || DEVICE_EXPIRES_IN=900
+    DEVICE_INTERVAL=$(printf '%s' "$HTTP_BODY" | json_get 'interval') || DEVICE_INTERVAL=5
+    [[ "$DEVICE_EXPIRES_IN" =~ ^[1-9][0-9]{0,5}$ && "$DEVICE_INTERVAL" =~ ^[1-9][0-9]{0,3}$ ]] || fail "Invalid server response."
+    DEVICE_DEADLINE_MS=$(( started_ms + DEVICE_EXPIRES_IN * 1000 ))
+
+    # The page is opened from a link or QR code, so only accept a secure web address with a host.
+    VERIFICATION_URI="$VERIFICATION_URI" python3 -c "
+import os, sys, urllib.parse
+uri = os.environ['VERIFICATION_URI']
+parts = urllib.parse.urlsplit(uri)
+parts.port  # raises ValueError for an invalid port
+ok = parts.scheme == 'https' and parts.hostname and not any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in uri)
+sys.exit(0 if ok else 1)
+" 2>/dev/null || fail "Invalid server response."
+
+    # A code that arrives already expired is useless: do not show it.
+    [ $(( DEVICE_DEADLINE_MS - $(monotonic_ms) )) -gt 0 ] || fail "The code has expired. Run the installer again to get a new code."
 }
 
-auth_fetch_locations() {
-    curl_json GET "${API_HOST}/api/auth/locations" \
-        -H "Authorization: Bearer $ACCESS_TOKEN"
-
-    if [[ "$HTTP_CODE" != 2* ]]; then
-        fail "$(api_error_message "$HTTP_BODY") (HTTP $HTTP_CODE)"
-    fi
-
-    LOCATIONS_JSON=$(printf '%s' "$HTTP_BODY" | python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-usable = [
-    loc for loc in data.get('locations', [])
-    if loc.get('api_token') and loc.get('client_id') is not None
-]
-print(json.dumps(usable))
+auth_device_wait() {
+    local payload error remaining_ms pause_ms next_poll_ms seconds
+    payload=$(DEVICE_CODE="$DEVICE_CODE" python3 -c "
+import json, os
+print(json.dumps({'device_code': os.environ['DEVICE_CODE']}))
 ")
-    LOCATION_COUNT=$(printf '%s' "$LOCATIONS_JSON" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))")
+    # Neither the pause nor a single request may run past the code's deadline, even if the server stalls.
+    # A suspend-aware clock in milliseconds keeps this exact and immune to system clock changes.
+    while :; do
+        remaining_ms=$(( DEVICE_DEADLINE_MS - $(monotonic_ms) ))
+        [ "$remaining_ms" -gt 0 ] || break
+        # Wait in slices of at most 1 s against the suspend-aware clock, so a host that wakes up after the
+        # deadline notices within a second instead of finishing a long (backed-off) pause first.
+        next_poll_ms=$(( $(monotonic_ms) + (DEVICE_INTERVAL * 1000 < remaining_ms ? DEVICE_INTERVAL * 1000 : remaining_ms) ))
+        while pause_ms=$(( next_poll_ms - $(monotonic_ms) )); [ "$pause_ms" -gt 0 ]; do
+            [ "$pause_ms" -gt 1000 ] && pause_ms=1000
+            sleep "$(( pause_ms / 1000 )).$(printf '%03d' $(( pause_ms % 1000 )))"
+            [ $(( DEVICE_DEADLINE_MS - $(monotonic_ms) )) -gt 0 ] || break 2
+        done
 
-    if [ "$LOCATION_COUNT" -eq 0 ]; then
-        fail "Your account has no location with a configured client."
-    fi
-}
+        remaining_ms=$(( DEVICE_DEADLINE_MS - $(monotonic_ms) ))
+        [ "$remaining_ms" -gt 0 ] || break
+        [ "$remaining_ms" -gt 30000 ] && remaining_ms=30000
+        seconds="$(( remaining_ms / 1000 )).$(printf '%03d' $(( remaining_ms % 1000 )))"
+        # The body goes through stdin, so the device code never appears in process arguments (ps, /proc).
+        curl_json POST "${API_HOST}/api/auth/device/token" "$seconds" --connect-timeout 10 --data-binary @- <<<"$payload" 2>/dev/null
+        # Network hiccup or server restart (deploy) while waiting: keep polling until the code expires.
+        # A connection failure or timeout backs off (RFC 8628 section 3.5); the pause stays capped by the deadline.
+        if [[ "$HTTP_CODE" == 000 ]]; then
+            [ "$DEVICE_INTERVAL" -lt 86400 ] && DEVICE_INTERVAL=$((DEVICE_INTERVAL * 2))
+            continue
+        fi
+        [[ "$HTTP_CODE" == 5* ]] && continue
 
-auth_select_location() {
-    local location_id="$1"
-    curl_json POST "${API_HOST}/api/auth/select-location" \
-        -H "Authorization: Bearer $ACCESS_TOKEN" \
-        -d "{\"location_id\": $location_id}"
+        # A response that arrives after the deadline must not complete setup.
+        [ $(( DEVICE_DEADLINE_MS - $(monotonic_ms) )) -gt 0 ] || break
 
-    if [[ "$HTTP_CODE" != 2* ]]; then
-        fail "$(api_error_message "$HTTP_BODY") (HTTP $HTTP_CODE)"
-    fi
-
-    API_TOKEN=$(printf '%s' "$HTTP_BODY" | json_get 'location.api_token') || fail "Invalid server response."
-    SELECTED_LOCATION_NAME=$(printf '%s' "$HTTP_BODY" | json_get 'location.name') || SELECTED_LOCATION_NAME=""
-}
-
-prompt_location_selection() {
-    echo ""
-    echo -e "${BOLD}Select a location:${NC}"
-    echo ""
-
-    local i=1
-    while IFS=$'\t' read -r id name slug; do
-        printf "  ${CYAN}%d)${NC} %s ${DIM}(%s)${NC}\n" "$i" "$name" "$slug"
-        i=$((i + 1))
-    done < <(printf '%s' "$LOCATIONS_JSON" | python3 -c "
-import json, sys
-for loc in json.load(sys.stdin):
-    print(f\"{loc['id']}\t{loc['name']}\t{loc.get('slug', '')}\")
-")
-
-    echo ""
-    if [ "$LOCATION_COUNT" -eq 1 ]; then
-        local only_id
-        only_id=$(printf '%s' "$LOCATIONS_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)[0]['id'])")
-        info "Only one location available — selecting automatically."
-        auth_select_location "$only_id"
-        success "Location: ${SELECTED_LOCATION_NAME}"
-        return
-    fi
-
-    while true; do
-        read -r -p "  Enter number [1-${LOCATION_COUNT}]: " choice
-        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$LOCATION_COUNT" ]; then
-            local selected_id
-            selected_id=$(printf '%s' "$LOCATIONS_JSON" | python3 -c "
-import json, sys
-locs = json.load(sys.stdin)
-print(locs[int(sys.argv[1]) - 1]['id'])
-" "$choice")
-            auth_select_location "$selected_id"
-            success "Location: ${SELECTED_LOCATION_NAME}"
+        if [[ "$HTTP_CODE" == 2* ]]; then
+            API_TOKEN=$(printf '%s' "$HTTP_BODY" | json_get 'api_token') || fail "Invalid server response."
+            [[ "$API_TOKEN" =~ [^[:space:]] ]] || fail "Invalid server response."
+            SELECTED_LOCATION_NAME=$(printf '%s' "$HTTP_BODY" | json_get 'location.name') || SELECTED_LOCATION_NAME=""
+            USER_EMAIL=$(printf '%s' "$HTTP_BODY" | json_get 'user.email') || USER_EMAIL=""
             return
         fi
-        warn "Please enter a number between 1 and ${LOCATION_COUNT}."
+
+        error=$(printf '%s' "$HTTP_BODY" | json_get 'error' 2>/dev/null || true)
+        case "$error" in
+            authorization_pending) ;;
+            slow_down) DEVICE_INTERVAL=$((DEVICE_INTERVAL + 5)) ;;
+            access_denied) fail "The request was denied in the browser. Run the installer again to get a new code." ;;
+            expired_token) fail "The code has expired. Run the installer again to get a new code." ;;
+            *) fail "$(api_error_message "$HTTP_BODY") (HTTP $HTTP_CODE)" ;;
+        esac
     done
+
+    fail "The code has expired. Run the installer again to get a new code."
 }
 
-authenticate_with_login() {
-    section_header "Sign in"
+authenticate_with_device() {
+    section_header "Connect this device to your Printerhive account"
 
-    local email password
-    while [ -z "$email" ]; do
-        read -r -p "  Email: " email
-        email=$(echo "$email" | xargs)
-        [ -n "$email" ] || warn "Email cannot be empty."
-    done
+    # Every request runs under timeout(1), so nothing ~/.curlrc adds can outlive the code.
+    require_command timeout "Install with: sudo apt install coreutils"
+    # --no-fail-with-body only exists since curl 7.76. Probe once, before the code exists, and without ~/.curlrc (-q).
+    CURL_NO_FAIL=(--no-fail)
+    curl -q --help all 2>/dev/null | grep -q -- '--fail-with-body' && CURL_NO_FAIL+=(--no-fail-with-body)
+    ask_proxy_password
+    auth_device_start
 
-    while [ -z "$password" ]; do
-        read -r -s -p "  Password: " password
+    echo ""
+    # The address comes from the server, so print it literally (no echo -e escape processing).
+    printf '  1. Open in a browser (computer or phone):  %b%s%b\n' "$BOLD" "$VERIFICATION_URI" "$NC"
+    echo -e "  2. Sign in to Printerhive if asked."
+    echo -e "  3. Enter this code:  ${BOLD}${CYAN}${USER_CODE}${NC}"
+    echo -e "  4. Click ${BOLD}Connect device${NC}."
+    echo ""
+    if command -v qrencode >/dev/null 2>&1; then
+        echo -e "  ${DIM}Or scan this QR code with your phone to open the page:${NC}"
+        qrencode -t ANSIUTF8 -m 2 "$VERIFICATION_URI"
         echo ""
-        [ -n "$password" ] || warn "Password cannot be empty."
-    done
+    fi
+    # Printing the QR code takes time too: report expiry instead of "valid for 0 min".
+    local remaining_ms
+    remaining_ms=$(( DEVICE_DEADLINE_MS - $(monotonic_ms) ))
+    [ "$remaining_ms" -gt 0 ] || fail "The code has expired. Run the installer again to get a new code."
+    info "Waiting for confirmation in your browser… (the code is valid for $(( (remaining_ms + 59999) / 60000 )) min, keep this terminal open)"
 
-    info "Signing in…"
-    auth_login "$email" "$password"
-    success "Signed in as ${USER_EMAIL}"
-
-    info "Loading locations…"
-    auth_fetch_locations
-    prompt_location_selection
+    auth_device_wait
+    success "Connected to location: ${SELECTED_LOCATION_NAME}${USER_EMAIL:+ (${USER_EMAIL})}"
 }
 
 resolve_api_token() {
+    # Hidden fallback for support: bash install-printerhive.sh <API_TOKEN>
     if [ -n "$1" ]; then
         API_TOKEN="$1"
         info "Using API token from command line."
         return
     fi
 
-    authenticate_with_login
+    authenticate_with_device
 }
 
 # ── Install progress ──────────────────────────────────────────────────────────
@@ -275,7 +320,7 @@ log_step() {
     local message="$3"
 
     local response http_code body error_message
-    response=$(curl -s -w "%{http_code}" -X POST "${API_HOST}/api/install-progress" \
+    response=$(curl -s -K <(printf '%s\n' "${CURL_PROXY_AUTH:-}") -w "%{http_code}" -X POST "${API_HOST}/api/install-progress" \
         -H "Content-Type: application/json" \
         -H "X-AUTH-TOKEN: $API_TOKEN" \
         -d "{\"step\": \"$step\", \"status\": \"$status\", \"message\": \"$message\"}")
@@ -297,7 +342,7 @@ check_docker() {
     step_header 1 "$TOTAL_STEPS" "Docker"
     if ! [ -x "$(command -v docker)" ]; then
         warn "Docker not found — installing…"
-        curl -fsSL https://get.docker.com -o get-docker.sh
+        curl -fsSL -K <(printf '%s\n' "${CURL_PROXY_AUTH:-}") https://get.docker.com -o get-docker.sh
         sudo sh get-docker.sh
         rm get-docker.sh
         sudo usermod -aG docker "$USER"
@@ -386,7 +431,7 @@ download_docker_compose() {
 
     if [ ! -f "docker-compose.yml" ]; then
         info "Downloading docker-compose.yml…"
-        if ! curl -fsSL https://raw.githubusercontent.com/printerhive/printerhive-client/main/docker-compose.yml -o docker-compose.yml; then
+        if ! curl -fsSL -K <(printf '%s\n' "${CURL_PROXY_AUTH:-}") https://raw.githubusercontent.com/printerhive/printerhive-client/main/docker-compose.yml -o docker-compose.yml; then
             log_step "6" "error" "Failed to download docker-compose.yml"
             fail "Could not download docker-compose.yml"
         fi
@@ -439,7 +484,6 @@ require_command curl "Install with: sudo apt install curl"
 require_command python3 "Install with: sudo apt install python3"
 
 echo "We may ask for a password for your admin account on this machine so we can download Printerhive, don't worry, your password is not stored anywhere."
-echo -e "  ${DIM}Your Printerhive credentials are sent only to app.printerhive.com.${NC}"
 echo ""
 
 resolve_api_token "$1"
